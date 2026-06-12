@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  # MongoDB Database Container
+  mongodb:
+    image: mongo:latest
+    container_name: feastflow_db
+    restart: always
+    ports:
+      - "27017:27017"
+    # No MONGO_INITDB environment variables = No login required
+    command: mongod --bind_ip_all
+    volumes:
+      - mongo-data:/data/db
+
+  # MongoDB GUI (Browser-based data viewer)
+  mongo-express:
+    image: mongo-express:latest
+    container_name: feastflow_ui
+    restart: always
+    ports:
+      - "8081:8081"
+    environment:
+      # Tells the UI to connect without a password
+      ME_CONFIG_MONGODB_URL: mongodb://mongodb:27017/
+      ME_CONFIG_MONGODB_ENABLE_ADMIN: "false"
+    depends_on:
+      - mongodb
+
+volumes:
+  mongo-data:
