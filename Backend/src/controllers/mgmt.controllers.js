@@ -4,7 +4,7 @@ import Menu from '../models/Menu.model.js';
 import bcrypt from 'bcryptjs'; // Synchronized import package with other system controllers
 
 /**
- * @desc    Create User Account (Hierarchical Enforcement Sync)
+ * @desc    Create User Account (Hierarchical Enforcement Sync + Fallback Admin Fix)
  * @route   POST /api/mgmt/account/create
  * @access  Private (Admin / Manager)
  */
@@ -29,14 +29,15 @@ export const createAccount = async (req, res) => {
       finalManagerId = creatorId; 
     } else if (creatorRole === 'admin') {
       // Admins bypass standard guard blocks to select any system role hierarchy
-      if (creatorRole !== 'admin' && finalRole === 'admin') {
+      if (finalRole === 'admin' && creatorId !== 'admin_default' && req.user.role?.toLowerCase() !== 'admin') {
         return res.status(403).json({ 
           success: false, 
           msg: 'Access Denied: Only existing Admins can create other Admin accounts.' 
         });
       }
       // Admins can link staff members to a manager if optional ID parameters are supplied
-      if (finalRole === 'staff' && managerId) {
+      // 🛡️ BSON GUARD: Prevent passing 'admin_default' string literal as a MongoDB ObjectId
+      if (finalRole === 'staff' && managerId && managerId !== 'admin_default') {
         finalManagerId = managerId;
       }
     } else {
@@ -53,6 +54,10 @@ export const createAccount = async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
+    // 🔥 FIX: Check if creator is the hardcoded fallback admin profile string literal.
+    // If true, pass null to 'createdBy' since "admin_default" fails the schema's explicit ObjectId validation.
+    const cleanCreatedBy = creatorId === 'admin_default' ? null : creatorId;
+
     // 4. Create the new user account with structural tracking parameters
     const newUser = await User.create({
       name,
@@ -62,8 +67,8 @@ export const createAccount = async (req, res) => {
       role: finalRole,
       gender,
       isActive: true,
-      createdBy: creatorId,     // Records the accountability node trace
-      managerId: finalManagerId // Assigns reporting chain structures seamlessly
+      createdBy: cleanCreatedBy,   // Safely avoids schema casting errors for hardcoded Super Admin
+      managerId: finalManagerId 
     });
 
     res.status(201).json({
@@ -79,6 +84,7 @@ export const createAccount = async (req, res) => {
     });
 
   } catch (err) {
+    console.error("ACCOUNT CREATION REJECTION INTERCEPTED:", err.message);
     res.status(500).json({ success: false, msg: 'Account creation failed', error: err.message });
   }
 };
@@ -185,7 +191,7 @@ export const updateAccountDetails = async (req, res) => {
       
       if (managerId !== undefined) {
         // If an explicit manager id string is passed, map it; otherwise clear reporting structures out
-        if (managerId && managerId !== '') {
+        if (managerId && managerId !== '' && managerId !== 'admin_default') {
           const verifyManager = await User.findById(managerId);
           if (!verifyManager || verifyManager.role?.toLowerCase() !== 'manager') {
             return res.status(400).json({ success: false, msg: "Assigned target supervisor reference must point to an active Manager profile." });
@@ -226,17 +232,19 @@ export const changeStaffManager = async (req, res) => {
     const { id } = req.params;
 
     // 1. If shifting managers, ensure the target account is explicitly a registered Manager node
-    if (managerId) {
+    if (managerId && managerId !== 'admin_default') {
       const targetManager = await User.findById(managerId);
       if (!targetManager || targetManager.role?.toLowerCase() !== 'manager') {
         return res.status(400).json({ success: false, msg: 'Target ID must point to an active Manager account.' });
       }
     }
 
+    const assignedManager = managerId === 'admin_default' || !managerId ? null : managerId;
+
     // 2. Atomic assignment mutation update
     const updatedStaff = await User.findByIdAndUpdate(
       id,
-      { $set: { managerId: managerId || null } },
+      { $set: { managerId: assignedManager } },
       { new: true, runValidators: true }
     ).select('-password');
 
